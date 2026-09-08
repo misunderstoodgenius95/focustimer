@@ -26,16 +26,17 @@ indipendenti (concentrazione e pausa).
 ## Requisiti
 
 - Java 17+
-- Maven
+- Nessuna installazione di Gradle richiesta: usare il wrapper incluso
+  (`./gradlew`, o `gradlew.bat` su Windows).
 
 ## Build ed esecuzione
 
 ```bash
-mvn javafx:run
+./gradlew run
 ```
 
 ## Test
 
 ```bash
-mvn test
+./gradlew test
 ```
