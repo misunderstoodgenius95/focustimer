@@ -1,109 +1,283 @@
 package com.focustimer;
 
-import com.focustimer.timer.CountdownTimer;
 import com.focustimer.tracker.PomodoroTracker;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
+import javafx.application.Application;
+import javafx.collections.FXCollections;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Scene;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
+import javafx.scene.control.TextField;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
+import javafx.stage.Stage;
 
 import java.time.Duration;
-import java.util.Scanner;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
-/**
- * Interactive command-line Pomodoro timer.
- *
- * Runs a focus timer followed by a break timer for a chosen label, keeps
- * a running total of time spent on breaks, and counts completed
- * pomodoros separately per label.
- */
-public class Main {
+public class Main extends Application {
 
-    private static final Duration DEFAULT_FOCUS_DURATION = Duration.ofMinutes(25);
-    private static final Duration DEFAULT_BREAK_DURATION = Duration.ofMinutes(5);
+    private enum Phase { IDLE, FOCUS, BREAK }
+
+    private static final int DEFAULT_FOCUS_MINUTES = 25;
+    private static final int DEFAULT_BREAK_MINUTES = 5;
+
+    private final PomodoroTracker tracker = new PomodoroTracker();
+
+    private Phase phase = Phase.IDLE;
+    private long remainingSeconds;
+    private long focusDurationSeconds;
+    private long breakDurationSeconds;
+    private String currentLabel;
+    private Timeline timeline;
+
+    private TextField labelField;
+    private TextField focusMinutesField;
+    private TextField breakMinutesField;
+    private Label statusLabel;
+    private Label timeLabel;
+    private Button startButton;
+    private Button pauseResumeButton;
+    private Button skipButton;
+    private ListView<String> statsListView;
+    private Label totalPomodorosLabel;
+    private Label totalBreakTimeLabel;
 
     public static void main(String[] args) {
-        PomodoroTracker tracker = new PomodoroTracker();
-        Scanner scanner = new Scanner(System.in);
+        launch(args);
+    }
 
-        System.out.println("=== Focus Timer (Pomodoro) ===");
+    @Override
+    public void start(Stage primaryStage) {
+        BorderPane root = new BorderPane();
+        root.setPadding(new Insets(16));
+        root.setTop(buildTitle());
+        root.setCenter(buildTimerPane());
+        root.setBottom(buildStatsPane());
 
-        boolean keepGoing = true;
-        while (keepGoing) {
-            System.out.print("\nEtichetta per questo pomodoro (es. 'Progetto X'): ");
-            String label = scanner.nextLine().trim();
-            if (label.isEmpty()) {
-                label = "Senza etichetta";
-            }
+        primaryStage.setTitle("Focus Timer (Pomodoro)");
+        primaryStage.setScene(new Scene(root, 420, 460));
+        primaryStage.show();
 
-            Duration focusDuration = askDuration(scanner, "Durata concentrazione in minuti", DEFAULT_FOCUS_DURATION);
-            Duration breakDuration = askDuration(scanner, "Durata pausa in minuti", DEFAULT_BREAK_DURATION);
+        refreshStats();
+    }
 
-            try {
-                runFocusTimer(label, focusDuration, tracker);
-                runBreakTimer(breakDuration, tracker);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                System.out.println("Timer interrotto.");
-                break;
-            }
+    private Label buildTitle() {
+        Label title = new Label("Focus Timer");
+        title.setStyle("-fx-font-size: 20px; -fx-font-weight: bold; -fx-padding: 0 0 12 0;");
+        return title;
+    }
 
-            printSummary(tracker);
+    private VBox buildTimerPane() {
+        labelField = new TextField();
+        labelField.setPromptText("Etichetta (es. Progetto X)");
 
-            System.out.print("\nVuoi iniziare un altro pomodoro? (s/n): ");
-            keepGoing = scanner.nextLine().trim().equalsIgnoreCase("s");
+        focusMinutesField = new TextField(String.valueOf(DEFAULT_FOCUS_MINUTES));
+        breakMinutesField = new TextField(String.valueOf(DEFAULT_BREAK_MINUTES));
+
+        GridPane form = new GridPane();
+        form.setHgap(8);
+        form.setVgap(8);
+        form.add(new Label("Etichetta:"), 0, 0);
+        form.add(labelField, 1, 0);
+        form.add(new Label("Concentrazione (min):"), 0, 1);
+        form.add(focusMinutesField, 1, 1);
+        form.add(new Label("Pausa (min):"), 0, 2);
+        form.add(breakMinutesField, 1, 2);
+
+        statusLabel = new Label("Pronto");
+        statusLabel.setStyle("-fx-font-size: 14px;");
+
+        timeLabel = new Label("00:00");
+        timeLabel.setStyle("-fx-font-size: 48px; -fx-font-weight: bold;");
+
+        startButton = new Button("Avvia");
+        startButton.setOnAction(e -> onStart());
+
+        pauseResumeButton = new Button("Pausa");
+        pauseResumeButton.setDisable(true);
+        pauseResumeButton.setOnAction(e -> onPauseResume());
+
+        skipButton = new Button("Salta fase");
+        skipButton.setDisable(true);
+        skipButton.setOnAction(e -> onSkip());
+
+        HBox buttons = new HBox(8, startButton, pauseResumeButton, skipButton);
+        buttons.setAlignment(Pos.CENTER);
+
+        VBox pane = new VBox(12, form, statusLabel, timeLabel, buttons);
+        pane.setAlignment(Pos.CENTER);
+        pane.setPadding(new Insets(12, 0, 12, 0));
+        return pane;
+    }
+
+    private VBox buildStatsPane() {
+        Label header = new Label("Pomodori per etichetta");
+        header.setStyle("-fx-font-weight: bold;");
+
+        statsListView = new ListView<>();
+        statsListView.setPrefHeight(120);
+
+        totalPomodorosLabel = new Label();
+        totalBreakTimeLabel = new Label();
+
+        VBox pane = new VBox(6, header, statsListView, totalPomodorosLabel, totalBreakTimeLabel);
+        pane.setPadding(new Insets(12, 0, 0, 0));
+        return pane;
+    }
+
+    private void onStart() {
+        currentLabel = labelField.getText().trim();
+        if (currentLabel.isEmpty()) {
+            currentLabel = "Senza etichetta";
         }
+        focusDurationSeconds = parseMinutesOrDefault(focusMinutesField, DEFAULT_FOCUS_MINUTES) * 60L;
+        breakDurationSeconds = parseMinutesOrDefault(breakMinutesField, DEFAULT_BREAK_MINUTES) * 60L;
 
-        System.out.println("\n=== Riepilogo finale ===");
-        printSummary(tracker);
+        labelField.setDisable(true);
+        focusMinutesField.setDisable(true);
+        breakMinutesField.setDisable(true);
+        startButton.setDisable(true);
+        pauseResumeButton.setDisable(false);
+        pauseResumeButton.setText("Pausa");
+        skipButton.setDisable(false);
+
+        startFocusPhase();
+
+        timeline = new Timeline(new KeyFrame(javafx.util.Duration.seconds(1), e -> onTick()));
+        timeline.setCycleCount(Timeline.INDEFINITE);
+        timeline.play();
     }
 
-    private static Duration askDuration(Scanner scanner, String prompt, Duration defaultValue) {
-        System.out.printf("%s [default %d]: ", prompt, defaultValue.toMinutes());
-        String input = scanner.nextLine().trim();
-        if (input.isEmpty()) {
-            return defaultValue;
+    private void onPauseResume() {
+        if (timeline == null) {
+            return;
         }
-        try {
-            return Duration.ofMinutes(Long.parseLong(input));
-        } catch (NumberFormatException e) {
-            System.out.println("Valore non valido, uso il default.");
-            return defaultValue;
-        }
-    }
-
-    private static void runFocusTimer(String label, Duration duration, PomodoroTracker tracker)
-            throws InterruptedException {
-        System.out.printf("%n▶ Concentrazione su \"%s\" per %d minuti...%n", label, duration.toMinutes());
-        new CountdownTimer().start(duration, remaining -> printCountdown("Focus", remaining));
-        tracker.recordFocusCompleted(label, duration);
-        System.out.println("\n✔ Pomodoro completato!");
-    }
-
-    private static void runBreakTimer(Duration duration, PomodoroTracker tracker) throws InterruptedException {
-        System.out.printf("%n▶ Pausa di %d minuti...%n", duration.toMinutes());
-        new CountdownTimer().start(duration, remaining -> printCountdown("Pausa", remaining));
-        tracker.recordBreakCompleted(duration);
-        System.out.println("\n✔ Pausa terminata!");
-    }
-
-    private static void printCountdown(String label, Duration remaining) {
-        long minutes = remaining.toMinutes();
-        long seconds = remaining.minusMinutes(minutes).getSeconds();
-        System.out.printf("\r%s: %02d:%02d", label, minutes, seconds);
-    }
-
-    private static void printSummary(PomodoroTracker tracker) {
-        System.out.println("Pomodori per etichetta:");
-        if (tracker.getPomodoroCountsByLabel().isEmpty()) {
-            System.out.println("  (nessuno ancora)");
+        if (pauseResumeButton.getText().equals("Pausa")) {
+            timeline.pause();
+            pauseResumeButton.setText("Riprendi");
         } else {
-            tracker.getPomodoroCountsByLabel()
-                    .forEach((label, count) -> System.out.printf("  - %s: %d%n", label, count));
+            timeline.play();
+            pauseResumeButton.setText("Pausa");
         }
-        System.out.printf("Totale pomodori: %d%n", tracker.getTotalPomodoroCount());
-        System.out.printf("Tempo totale in pausa: %s%n", formatDuration(tracker.getTotalBreakTime()));
+    }
+
+    private void onSkip() {
+        completeCurrentPhase();
+    }
+
+    private void onTick() {
+        remainingSeconds--;
+        if (remainingSeconds < 0) {
+            completeCurrentPhase();
+        } else {
+            updateTimeLabel();
+        }
+    }
+
+    private void startFocusPhase() {
+        phase = Phase.FOCUS;
+        remainingSeconds = focusDurationSeconds;
+        statusLabel.setText("Concentrazione su \"" + currentLabel + "\"");
+        updateTimeLabel();
+    }
+
+    private void startBreakPhase() {
+        phase = Phase.BREAK;
+        remainingSeconds = breakDurationSeconds;
+        statusLabel.setText("Pausa");
+        updateTimeLabel();
+    }
+
+    private void completeCurrentPhase() {
+        if (phase == Phase.FOCUS) {
+            tracker.recordFocusCompleted(currentLabel, Duration.ofSeconds(focusDurationSeconds));
+            refreshStats();
+            startBreakPhase();
+        } else if (phase == Phase.BREAK) {
+            tracker.recordBreakCompleted(Duration.ofSeconds(breakDurationSeconds));
+            refreshStats();
+            finishCycle();
+        }
+    }
+
+    private void finishCycle() {
+        if (timeline != null) {
+            timeline.stop();
+        }
+        phase = Phase.IDLE;
+        remainingSeconds = 0;
+        updateTimeLabel();
+        statusLabel.setText("Pomodoro completato! Pronto per il prossimo.");
+
+        labelField.setDisable(false);
+        focusMinutesField.setDisable(false);
+        breakMinutesField.setDisable(false);
+        startButton.setDisable(false);
+        pauseResumeButton.setDisable(true);
+        pauseResumeButton.setText("Pausa");
+        skipButton.setDisable(true);
+    }
+
+    private void updateTimeLabel() {
+        long minutes = remainingSeconds / 60;
+        long seconds = remainingSeconds % 60;
+        timeLabel.setText(String.format("%02d:%02d", minutes, seconds));
+    }
+
+    private void refreshStats() {
+        statsListView.setItems(FXCollections.observableArrayList(formatLabelCounts()));
+        totalPomodorosLabel.setText("Totale pomodori: " + tracker.getTotalPomodoroCount());
+        totalBreakTimeLabel.setText("Tempo totale in pausa: " + formatDuration(tracker.getTotalBreakTime()));
+    }
+
+    private List<String> formatLabelCounts() {
+        List<String> lines = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : tracker.getPomodoroCountsByLabel().entrySet()) {
+            lines.add(entry.getKey() + ": " + entry.getValue());
+        }
+        return lines;
     }
 
     private static String formatDuration(Duration duration) {
-        long minutes = duration.toMinutes();
-        long seconds = duration.minusMinutes(minutes).getSeconds();
+        long totalSeconds = duration.getSeconds();
+        long minutes = totalSeconds / 60;
+        long seconds = totalSeconds % 60;
         return String.format("%d min %02d sec", minutes, seconds);
+    }
+
+    private int parseMinutesOrDefault(TextField field, int defaultValue) {
+        String text = field.getText().trim();
+        if (text.isEmpty()) {
+            return defaultValue;
+        }
+        try {
+            int value = Integer.parseInt(text);
+            if (value <= 0) {
+                throw new NumberFormatException();
+            }
+            return value;
+        } catch (NumberFormatException e) {
+            showInvalidDurationAlert(text, defaultValue);
+            field.setText(String.valueOf(defaultValue));
+            return defaultValue;
+        }
+    }
+
+    private void showInvalidDurationAlert(String invalidValue, int defaultValue) {
+        Alert alert = new Alert(Alert.AlertType.WARNING);
+        alert.setTitle("Valore non valido");
+        alert.setHeaderText(null);
+        alert.setContentText("\"" + invalidValue + "\" non è un numero di minuti valido. Uso il default: " + defaultValue + ".");
+        alert.showAndWait();
     }
 }
